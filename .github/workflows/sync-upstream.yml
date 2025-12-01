@@ -1,0 +1,111 @@
+name: Sync Upstream Repository
+
+on:
+  schedule:
+    # 每天晚上 12 点（UTC+8 中国时间 = UTC 16:00）
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    name: Sync Upstream Content
+    
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Git configuration
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/0xdabiaoge/singbox-lite.git || git remote set-url upstream https://github.com/0xdabiaoge/singbox-lite.git
+
+      - name: Fetch upstream changes
+        run: |
+          git fetch upstream main:upstream-main
+
+      - name: Check if upstream has changes
+        id: check_changes
+        run: |
+          UPSTREAM_COMMIT=$(git rev-parse upstream-main)
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          
+          if [ "$UPSTREAM_COMMIT" = "$LOCAL_COMMIT" ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "✅ 上游仓库无更新，本地仓库已是最新状态"
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "🔄 检测到上游仓库有更新，开始同步..."
+          fi
+
+      - name: Sync singbox.sh
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          # 从上游获取 singbox.sh
+          git show upstream-main:singbox.sh > singbox.sh
+          
+          # 设置执行权限
+          chmod +x singbox.sh
+          
+          echo "✅ singbox.sh 已同步"
+
+      - name: Sync README.md with custom installation command preserved
+        if: steps.check_changes.outputs.has_changes == 'true'
+        run: |
+          # 提取本地 README.md 中的自定义安装命令部分
+          if grep -q "### 使用以下命令运行脚本" README.md; then
+            awk '/^### 使用以下命令运行脚本/,EOF' README.md > custom_section.tmp
+          fi
+          
+          # 从上游获取新的 README.md
+          git show upstream-main:README.md > README.md.new
+          
+          # 如果有自定义部分，删除上游 README 中的相同部分，然后追加自定义内容
+          if [ -f custom_section.tmp ]; then
+            # 删除新 README 中的 "### 使用以下命令运行脚本" 及其后续内容
+            sed -i '/^### 使用以下命令运行脚本/,$d' README.md.new
+            
+            # 追加自定义部分
+            echo "" >> README.md.new
+            cat custom_section.tmp >> README.md.new
+            
+            rm custom_section.tmp
+          fi
+          
+          # 替换原 README.md
+          mv README.md.new README.md
+          
+          echo "✅ README.md 已同步（保留自定义安装命令）"
+
+      - name: Check if there are changes
+        id: git_status
+        run: |
+          if git diff --quiet; then
+            echo "changes_exist=false" >> $GITHUB_OUTPUT
+          else
+            echo "changes_exist=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push changes
+        if: steps.git_status.outputs.changes_exist == 'true'
+        run: |
+          git add singbox.sh README.md
+          git commit -m "🔄 sync: 同步上游仓库更新 ($(date '+%Y-%m-%d %H:%M:%S'))"
+          git push origin main
+          echo "✅ 变更已推送到主分支"
+
+      - name: No changes to commit
+        if: steps.git_status.outputs.changes_exist == 'false'
+        run: |
+          echo "✅ 文件无变化，无需提交"
